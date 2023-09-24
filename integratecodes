@@ -1,0 +1,1079 @@
+#!/usr/bin/perl
+
+# integratecodes v0.2.4 copyright 2007 Thomas McFadden
+
+# This file is part of CsPTools.
+
+#    integratecodes is free software; you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation; either version 2 of the License, or
+#    (at your option) any later version.
+
+#    integratecodes is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+
+#    You should have received a copy of the GNU General Public License
+#    along with Foobar; if not, write to the Free Software
+#    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+
+# 0.2.4: fixed a problem in the regex used to identify id strings, which
+# didn't work with the OE corpus.  (problem identified by Ann Taylor).
+
+# 0.2.3: the main big thing is i added the possibility of
+# substitutions specified in a run-control file.  the substitutions
+# are carried out on stuff from the input file or the change file or
+# both in order to iron out little things that might have changed,
+# like file id conventions or whatever, to ensure that matches are
+# still made.  the RC file can also be used later for other stuff.
+# also made some minor bug fixes in some of the regexes and
+# prettied-up some of the printout stuff.
+
+# 0.2.2 is just 2.1.3 gussied up for CsPTools release.  put a zero in
+# front, dropped the last digit and incremented the second to last
+# digit.
+
+# script takes one or more corpus files (the input files), along with
+# a single file (the changefile) containing a subset of the sentences
+# in the inputfiles, which have had their codes changed.  the script
+# changes updates the codes in the inputfiles to be in line with the
+# changefile.  
+
+# version 2.1.3 tweaks the handling of text a bit to get rid of
+# comment-type junk that varies between versions of the corpus and was
+# getting in the way of matches.  it also includes a little hack to
+# deal with a change in the ID numbering scheme in latimer, deleting
+# an extra comma.  these two things together got me about 400 extra
+# successful changes.  i think that's about the best i can do.
+
+# version 2.1.2 brings some improvements in efficiency: after
+# experimenting with a couple other possibilities, i redid
+# restrict_by_text, nesting the loops through the changes and the
+# files the opposite way.  this made a big improvement.  smaller
+# things, like reimplementing a bunch of if (x) {y} structures as y if
+# x, may or may not have helped out as well.  i discovered a minor
+# bug, where get_input_texts actually returns a hash, but
+# restrict_by_text was capturing it as an array.  that doesn't seem to
+# have had any adverse effects, but i fixed it just in case.  also
+# added a new option, -l, to allow the specification of a logfile.
+# this is better than just redirecting output to a file, cause this
+# way interactive stuff can be kept separate.  i've set it up so that
+# only the final reports are sent to the log file, and i've added the
+# possibility to print progress information to the terminal with -p,
+# so the user know that things are working.
+
+# version 2.1.1 leaves the functionality the same, but contains
+# significant changes in implementation, in an attempt to simplify the
+# code.  most importantly, i've reimplemented the way that misses are
+# handled, by using hashes of references to arrays instead of arrays
+# of references to arrays to store idcodetext stuff.  doing it this
+# way lets me delete an element from the %ch_left hash after it's been
+# used to trigger a change, and what's left at the end are the missed
+# changes.  this has made runs with miss reporting much more efficient
+# (3 minutes vs. 15), but has made runs without miss reporting
+# considerably less efficient (3 minutes vs. 1:15).  output from the
+# profiler is in /home/tom/csearch/main/eme/newout/tmon.out type
+# dprofpp -u in that directory.  i'll address this next, as well as
+# seeing if i can't tweak things to get more successful changes and
+# less misses.  i've made the variable naming a bit more consistent.
+# this should make the code much more transparent than it was.
+# there's also more stuff that should be moved into CsPTools.pm, mainly
+# the regexes that deal with coding and id strings, and any remaining
+# operations on files.  and there's more cleanup left to do in terms
+# of variable use and naming and rewriting the documentation.  it's
+# because i know all that is coming soon that i'm only incrementing
+# the third digit in the version number.
+
+# version 2.1.0 introduces the possibility of making changes even when
+# the ids don't match up completely, allowing us to make the big leap
+# of transferring codes from files from the old version of the corpus
+# into the new version of the corpus.  oh yeah.  for the most part,
+# the ids haven't completely changed.  only the last number has, which
+# corresponds to the sentence number.  the earlier numbers are pages
+# numbers, chapter numbers, whatever, and none of that is supposed to
+# change.  so if an input sentence and a sentence in the changefule
+# match in their text and in their id up to a given point, the change
+# can be made anyway.  this text-based matching is turned off by
+# default, but can be activated with the -t flag.  changes that are
+# made without a perfect ID match are recorded and reported
+# separately.  also recorded are instances where the texts match, but
+# the IDs aren't even right up to the first number, but the changes
+# are not made.  these will need to be investigated to see if the
+# methods used here can be improved.  unfortunately, under the current
+# implementation, the text-based matching can't be combined with
+# reporting of misses.  things have gotten to be messy, so some
+# initial simplifications have been undertaken: &request,
+# &read_input_file, &get_outdir and &file_test have been moved into
+# CsPTools.pm.  &read_input_file has been renamed &read_file and made
+# more general, and also incorporates the call to file_test, which
+# itself is now r_file_test, to properly check that the file exists
+# and is readable.  &read_file is now also called by
+# &process_changefile, which is thus simpler.  the glut of global
+# variables that were being used to record stuff about changes for
+# reporting has been massively reduced.
+
+# version 2.0.1 fixes the regular expressions that deal with id tags to
+# work with the eme corpus.  the original pattern involved the start
+# CM, which of course stands for Corpus Middle English.  duh.  this
+# new version has been tested on both EME and ME and seems to work
+# right.  facilities have also been added to report on what changes
+# fail to be made in addition to which ones are successfully made.
+# the way this is handled is currently ugly, inefficient and
+# inflexible, but it does do what it's supposed to.  the -m flag
+# causes the misses information to be reported.
+
+# version 2 is a huge improvement.  when the bug in the handling of
+# ambiguous sentences was fixed in v1.1.1, the real number of
+# ambiguous sentences was revealed, and turned out to be way too high
+# for it to be acceptable that the script just ignores them.  the
+# crucial changes in v2 are a response to that.  the script now uses
+# the actual text of the sentence to distinguish between ones that
+# have the same id.  so now it actually makes all changes.  this
+# required fairly extensive reworking of the implementation in a
+# number of places, but the basic path that the script follows is
+# essentially the same.  one way or another, the reworking resulted in
+# a considerable performance boost, nearly an order of magnitude.  not
+# sure exactly which change cause this, but i suspect it has to do
+# with the fact that much more is done now with information about the
+# input text stored in a variable during a single pass through the
+# file, and much less by looking directly at the file itself.  the
+# diagnostics built into v1.1.1 have also been vastly improved, both
+# in terms of informativeness and flexibility.  stuff to do would be
+# to maybe build in a failsafe to make sure there are no input
+# sentences that have both identical ids and identical texts.  this
+# shouldn't happen, since that would mean a sentence that has two
+# identical clauses in it, but it might still be nice just in case.
+# also, should build in a counter for the number of sentences in the
+# changefile, so that this can be compared to the total number of
+# changes actually made, to make sure that everything gets done.
+
+# version 1.1.1 is essentially a bugfix.  the implementation of
+# checking for ambiguous ids had a bug that made it miss a bunch and
+# thus change a bunch of sentences it shouldn't have changed.  that
+# problem should be fixed here.  the result, however, especially when
+# run on the larger corpus to propagate changes backwards, is that the
+# number of sentences that need to be left and fixed by hand is
+# unacceptably high, like 102 out of 420 or something like that.  so
+# i'm going to immediately start working on a version that can
+# distinguish the ambiguous sentences, or at least a larger percentage
+# of them.  because of this i'm not going to fully update the comments
+# to reflect the changes i've made, just to save time.  the crucial
+# changes are commented, and then there's a number of added diagnostic
+# printing lines and stuff like that.
+
+# version 1.1 improves on v1.0 by vastly improving efficiency,
+# somewhere in the neighborhood of 95% (see diagnostics in the
+# comments before &restrict_by_text).  this was done by introducing
+# &restrict_by_text, which makes sure that only those changes are
+# passed to &process_input_lines which could possibly be relevant to
+# the file being currently processed.  the elimination of ambiguous
+# ids was also moved out of &check_codes and combined with the finding
+# of ambiguous ids, formerly handled by &find_ambig_id.  both of these
+# functions are now combined in &strip_ambig.  along with improving
+# clarity a bit, this also radically simplified &check_codes itself,
+# which should make it possible to get some of the regular expressions
+# there to precompile instead of recompiling every time through the
+# loop, which in theory should bring another performance boost.  i may
+# try this later as an exercise, but given how fast the whole thing
+# runs right now, it's not really necessary for actual speed purposes.
+
+# version 1.0 improves on v0.5 in that it deals acceptably with
+# ambiguous sentence ids.  it doesn't automatically figure out which
+# of the various hits with the same id should have its code changed,
+# but at least it doesn't make incorrect changes.  instead, it leaves
+# such sentences alone, and reports the id to the user so that s/he
+# can make the appropriate changes in the input file by hand.  the
+# script is still horribly slow.
+
+use warnings;
+use strict;
+use File::Basename;
+use Getopt::Long;
+Getopt::Long::Configure ("bundling");
+use CsPTools ('request','read_file','get_outdir', 'get_cspt_version');
+    # standard subroutines loaded in from module file as of 2.1.1
+
+# the following are the real globals in the script.  
+
+our ($opt_c, $opt_d, $opt_D, $opt_m, $opt_n, $opt_s, $opt_t, $opt_v,
+     $opt_l, $opt_p, $opt_r, %changes, %ch_left, $outdir, @ch_made,
+     @mismatch, $log, $version, $help, @global_subst, @change_subst,
+     @input_subst);
+
+GetOptions ('d|dir=s' => \$opt_d,
+	    'c|changefile=s' => \$opt_c,
+	    'V|verbose' => \$opt_v,
+	    's|silent' => \$opt_s,
+	    'n|number' => \$opt_n,
+	    'D|detailed' => \$opt_D,
+	    'm|missed' => \$opt_m,
+	    't|text' => \$opt_t,
+	    'l|log=s' => \$opt_l,
+	    'p|progress' => \$opt_p,
+	    'v|version' => \$version,
+	    'h|help' => \$help,
+	    'r|runcontrol=s' => \$opt_r,
+	    ) or die "Aborting...\n";
+
+# our $id_regex = '^\(([A-Z]+.+,[\w,\.]*\.\d+)\)';
+
+
+my $version_number = "0.2.4";
+
+# third CsPTools version, 17.4.2007
+
+my $cspt_version = &get_cspt_version;
+
+sub version {
+    print "integratecodes v$version_number (CsPTools v$cspt_version)\n";
+}
+
+if ($version) {
+    &version;
+    exit;
+}
+
+if ($help) {
+    my $format = "%3s %-12s %-8s %s\n";
+    my $indent = "\t\t\t    %-50s\n";
+    print "\n\n";
+    print "This is ";
+    &version;
+    print "\n\tChange codes in input files on the basis of the codes in a changefile.\n\n";
+    print "Usage:\n\tintegratecodes [options] inputfiles\n\n";
+    print "Command-line options:\n";
+    printf $format, "-c,", "--changefile", "<file>", 
+    "Use <file> as basis for changes";
+    printf $format, "-D,", "--detailed", "", 
+    "Print detailed info on the changes made";
+    printf $format, "-d,", "--dir", "<dir>", "Use <dir> for output files";
+    printf $format, "-h,", "--help", "", "Print this helpful message";
+    printf $format, "-l,", "--log", "<file>", 
+    "Record change information in <file>";
+    printf $format, "-m,", "--missed", "", 
+    "Report clauses in changefile which could not be"; 
+    printf $indent, "found in inputfiles";
+    printf $format, "-n,", "--number", "", 
+    "Print how many times each coding string was used";
+    printf $format, "-p,", "--progress", "", 
+    "Print progress indicator in terminal";
+    printf $indent, "in making changes";
+    printf $format, "-r,", "--runcontrol", "<file>", 
+    "Read <file> for configuation info";
+    printf $format, "-s,", "--silent", "", "Don't print anything";
+    printf $format, "-t,", "--text", "", 
+    "Allow change when id of sentence in changefile and";
+    printf $indent, "inputfile don't match perfectly, as long as their";
+    printf $indent, "texts do";
+    printf $format, "-V,", "--verbose", "", 
+    "Print detailed info on everything";
+    printf $format, "-v,", "--version", "", "Print version information";
+    print "\n";
+    exit;
+}
+
+
+#####
+# sorting subrouting for numerical instead of asciibetical sort
+
+sub by_number { $a <=> $b }
+#
+#####
+
+##########
+#####
+# group &idcodetext, &find_id, &find_code and &find_text.  these
+# replace &idandcode from earlier versions.  they take an array of
+# corpus lines and, output a hash of (references) to arrays (until
+# 2.1.1: array of (references to) arrays).  each hit from the corpus
+# file has an element of the hash associated with it, a reference to
+# an array containing the id, code and text for that hit.
+
+#####
+# sub &idcodetext.  takes the array of corpus lines as its argument.
+# operates on a three-way switch variable $quarry which indicates what
+# we're currently looking for, either id, code or text.  we go through
+# the lines one by one and call the appropriate subroutine depending
+# on how $quarry is set.  depending on what those subroutines return,
+# the switch $quarry may be set differently.  the line commented with
+# || is where the big hash is created.
+
+sub idcodetext {  # @lines
+    my (%returns, $line, $id, $code, $text, $hit, $done);
+    my $quarry = "id";  # default/initial setting
+    $hit = 0; # start index for hash at zero
+    my $type = shift @_; # input or change, to pass to find_id 
+#    print "idcodetext was given ", scalar @_, " things\n"; #debug
+    while (@_) {                 
+	$line = (shift @_);         # go through the lines
+	if ($quarry eq "id") {
+	    $id = &find_id($type, $line);
+	    if ($id) {
+		$quarry = "code";
+#		print "$id\n"; #debug#
+	    }
+	}
+	elsif ($quarry eq "code") {
+	    ($code,$text) = &find_code($line); # also storing initial text
+	    $quarry = "text" if $code;
+	}
+	elsif ($quarry eq "text") {
+	    ($text,$done) = &find_text($line,$text);
+	    if ($done eq "yes") { # message that we've got whole text
+		my @info = ($id, $code, $text); # put it all in one array
+		$returns{$hit} = \@info; # || store ref to array in big hash
+		$text = "";     # clean out for next hit
+		$code = "";     # "
+		++$hit;         # increment index for hash
+		$quarry = "id"; # reset switch
+	    } # if not $done, go to next line, $quarry still = text
+	}
+	else {  # we should only get here if there's a bug in this script
+	    print "integratecodes: Programming error:\n";
+	    print "Invalid value for \$quarry!\n";
+	    exit;
+	}
+    }
+#    print "idcodetext found ", scalar %returns, " things\n"; #debug#
+    return %returns; # send back the hash of arrays to the calling context
+}
+#
+#####
+
+#####
+# sub &find_id.  takes current line as its argument.  checks to see if
+# it has the form of an id line.  if so, it grabs the id string and
+# returns it to the calling context.  this should be generalized and
+# moved into the module file.
+
+# change made in the regex for identifying id strings v0.2.4,
+# 17.4.2007 due to problems reported by Ann Taylor.  the old one was
+# way too specific, and only worked for the format of id strings in
+# the ME and EModE corpora.  the new one being used here is way more
+# general, and works for the OE corpus as well.  hopefully it's not
+# too general and won't start identifying things as ids which are
+# something else.  but i think that shouldn't be a problem, especially
+# since the context where it gets to be applied is so limited.
+
+sub find_id {  # $type, $line
+    my $id;
+    my $type = shift;
+    $_ = shift;
+#    if (/^\(([A-Z]+.+,[\w,\.]*\.\d+)\)/) { # old id regex too specific
+    if (/^\((.*\d+\.\d+)\)/) { # new one 17.4.2007
+	$id = $1;
+	if (@global_subst) {
+	    foreach my $subst (@global_subst) {
+		my $command = '$id =~ ' . "$subst";
+		eval $command;
+	    }
+	}
+	if ($type eq "ch") {
+	    if (@change_subst) {
+		foreach my $subst (@change_subst) {
+		    my $command = '$id =~ ' . "$subst";
+		    eval $command;
+		}
+	    }
+
+	}
+	else { # type must be in
+#	    print "Foo!\n"; #debug
+	    if (@input_subst) {
+		foreach my $subst (@input_subst) {
+		    my $command = '$id =~ ' . "$subst";
+		    eval $command;
+		}
+	    }
+	    
+	}
+    }
+    return $id;
+}
+#
+#####
+
+#####
+# sub &find_code.  takes current line as argument.  checks to see if
+# it has the form of a coding line.  if so, it grabs the coding string
+# and returns it to the calling context.  in v2.1.0, added the code to
+# deal with the possibility that the line with the CODING string could
+# also contain the start of the text, something which is possible now
+# that corpussearch puts codes in the IP instead of outside it.  this
+# should be generalized and moved into the module file.
+
+sub find_code {  # $line
+    my ($code,$text);
+    if ($_[0] =~ /\(.*? \(.*?CODING (.+?)\)(.*)/) { 
+	$code = $1;
+	$_ = $2;           # in case there's text on same line as CODING
+	s/[^a-z]//go if $_; # delete everything but lowercase letters
+	$text = $_ if $_;  # save text
+    }
+    return ($code,$text);
+}
+#
+#####
+
+#####
+# sub &find_text.  takes current line and a text string as arguments.
+# basically, this subroutine is supposed to process all the lines
+# between the coding line and the id line that closes off the clause,
+# taking all of the lowercase letters and fusing them together into
+# one long string that can help to identify the clause in case it has
+# an ambiguous id.  it first checks whether the current line has the
+# form of a closing id line.  if so, it returns the text string along
+# with a message that the clause is done, so that &idcodetext knows to
+# send off the info it's gathered on the clause, flip the $quarry
+# switch to id, and move on to the next clause.  if the current line
+# is not a closing id line, a string is created by deleting all the
+# characters from the line that are not lower-case letters.  this is
+# then concatenated onto the text string that came in as an argument,
+# and the new longer text string is passed back to the calling
+# context, along with a message saying that the text string isn't done
+# yet.
+
+sub find_text {
+    my $line = $_[0];
+    my $text = $_[1];
+    my $done;
+    if ($line =~ /\(.*?ID (.*?)\)/) { # if closing id tag
+	$done = "yes"; # message to &idcodetext that this clause is done
+    }
+    else {
+	chomp ($_ = $line);
+	if (/({.*?})/) { # ignore comments, since they've change a lot
+	    s/$1//g;     # from the old corpus version to the new
+	}
+	if (/(RMV.*?)\)/) {
+	    my $remove = quotemeta($1);
+	    s/$remove//g;	
+	}
+#	if (/(RRC.*?)\)/) {
+#	    s/$1//g;
+#	}
+	if (/<(.*?)>/) {            # ignore stuff in <>, like business about
+	    my $safe = quotemeta $1;# fonts and whatnot
+	    s/$safe//g;             # quotemeta added v0.2.3
+	}
+	s/[^a-z]//g; # delete everything but lowercase letters
+	$text .= $_;
+	$done = "no"; # message to &idcodetext that clause is not done
+    }
+    return ($text,$done);
+}
+#
+#####
+# end of subroutine group &idcodetext, &find_id, &find_code and &find_text
+##########
+
+#####
+
+# subroutine &process_changefile.  gets the name of the changefile,
+# either from the -c flag, or by querying the user.  then runs
+# &read_file from the module to make sure the file exists and is
+# readable and read its lines into the @changelines arrays, then runs
+# &idcodetext on that, creating the hash %changes and returning it.
+
+sub process_changefile {
+    my $cf;
+    unless ($cf = $opt_c) { # check for -c option first
+	$cf = &request("changefile"); # get it with request
+	}
+    my @changelines = &read_file($cf);
+    my %changes = &idcodetext("ch", @changelines); # pass type for find_id
+#    print "exiting process_changefile\n"; #debug#
+    return %changes;
+}
+#
+#####
+
+#####
+# subroutine &get_input_texts.  called by &restrict_by_text.  takes as
+# its argument the array of arrays with the id, code and text for each
+# hit in the current input file.  the routine loops through the
+# @inputs array, storing each new text id in the %files hash.  the
+# reason why i use a hash instead of an array is because this way we
+# only get each text listed once.  it also means we can count how many
+# sentences belong in each text, which i make no use of at the moment,
+# but i could later.  the 'fast' option that used to be here has been
+# removed cause it never actually made things faster.  for reasons
+# that remain unclear, the program just spends an infinitessimal
+# percentage of its time in this routine, so speeding it up a bit just
+# doesn't matter.
+
+sub get_input_texts { # %idcodetext
+    my $rh_inputs = $_[0];
+    my %inputs = %$rh_inputs;   # deref
+    my %files;
+    while (my ($key,$ra_hit) = each %inputs) {
+	my @hit = @$ra_hit; # deref
+	my $id = $hit[0];
+#	print "$id\n";#debug
+	if ($id =~ /([\w\-]+),/) { # extract textname from id
+	    my $file = $1;
+	    ++$files{$file};
+	}
+    }
+    return (keys %files); # return array of keys for efficiency
+}
+#
+#####
+
+#####
+# subroutine &restrict_by_text.  takes two arguments, a reference to
+# the hash of idcodetext arrays from the input file, and one to the
+# same thing from the change file.  it sends the former off to
+# &get_input_texts to find out which actual texts are involved.  then
+# in the while loop it cycles through the elements from the change
+# hash.  each element is of course a reference to an array of the id,
+# code and text for a given hit in the change file.  so for each of
+# these we look at its zero element, its id, and compare it to the
+# list of texts we got from the inputfile.  if the id is from one of
+# the files on the list, then we store that whole element, i.e. a
+# reference to the array containing id, code and text from the
+# changefile, into a hash @outchanges, crucially under the same $key
+# that was used in the input hash.  this is what will allow us later
+# to delete used elements from the change hash.  at the end, we return
+# %outchanges to the calling context.  after making the switch to
+# hashes, this subroutine is now massively slow, and i'm not entirely
+# sure why yet.  it's the main drain on efficiency.
+
+sub restrict_by_text { # \%input_idcodetext, \%change_idcodetext
+    my ($rh_inputs,$rh_inchanges) = @_; # get arguments
+    my %inchanges = %$rh_inchanges; # deref
+    my (%outchanges, $ch_text, %efficiency_hash);
+    my @input_texts = &get_input_texts($rh_inputs);
+    foreach my $text (@input_texts) {
+	while (my ($key,$ra_inchange) = each %inchanges) { # go through changes
+	    my @change = @$ra_inchange; # deref
+	    my $change_text = $change[0];
+#	    print "$change_text : $text\n"; #debug
+	    if ($change_text =~ /$text/) {  # if current change matches
+		$outchanges{$key} = $ra_inchange; # store it with same key
+	    }          # as is used in %changes/%ch_left
+	}
+    }
+    return \%outchanges; # return reference for efficiency
+}
+#
+#####
+
+##########
+#####
+# subroutine group &process_input_lines, &check_idtext and
+# &process_code.  these three subroutines together do the actual magic
+# of creating new copies of corpus files with their codes changed to
+# match with the changefile.  the arguments coming in are references
+# to hashes containing the ict of changes to be made in the current
+# input file, the lines in the current inputfile, and the ict of the
+# current input file itself.  nothing gets returned to the calling
+# context, but the potentially modified lines are printed to the
+# relevant output file, and a global variable records the changes
+# made.
+
+#####
+# subroutine &process_input_lines.  
+
+## the following description is outdated.  the implementation has
+## changed here and will need to be redocumented once the code is
+## stable.
+
+# the routine is built around a foreach loop and a variable $switch
+# (recast as a variable local to this subroutine as of v2), which
+# determines what needs to be done with that line.  the foreach loop
+# cycles through the inputlines, and a parallel mechanism cycles
+# through the clauses encoded as elements of the inputfile's ict
+# array.  this two-layered approach allows lookahead: by comparing the
+# current line to what the ict array encodes about the inputfile, we
+# can figure out what needs to be done.  if the $switch is in the
+# default position "idtext", &check_idtext is called on the current
+# line.  that subroutine determines whether the current line is the
+# start of a sentence, and if so whether it's a sentence that needs to
+# be changed.  if it's not the start of a sentence (&check_idtext
+# signals this to &process_input_lines by returning two null strings),
+# the line is printed to OUTPUT unchanged, and we move to the next
+# line.  if it is the start of a sentence, but not one of the
+# sentences that need to be changed (&check_idtext signals this to
+# &process_input_lines by passing a null string followed by the
+# non-null id of the current line), the line is printed to OUTPUT
+# unchanged, and we move to the next element of @in_hits.  in other
+# words, we've finished considering the first sentence in the input
+# file, so we can move on to the second.  if the current line is the
+# start of a sentence that we do need to change, &check_idtext will
+# return to us here the new code from the changefile as well as the id
+# of the current sentence.  the current line is printed to OUTPUT
+# unchanged (cause even with a sentence that has to be changed, this
+# isn't the line that has to be changed), $switch is changed to "code"
+# (cause now we'll be looking for the code line to change), and we
+# move to the next element of @in_hits.  this is because that array is
+# only needed to constrain what goes on in &check_idtext.  by
+# advancing @in_hits here, we're just getting ready for when
+# &process_code gets finished its work and we're ready to move on to
+# the next sentence.  when $switch is in the "code" position, the
+# current line is sent off to the &process_code subroutine, which
+# determines whether the current line is the coding line.  if it is
+# not, then it is printed to OUTPUT unchanged and we move on to the
+# next line.  if it is, then the relevant change is made, and the
+# altered form of the line is returned here, along with a message
+# saying that the change has been made.  that message tells us to flip
+# switch back to "idtext".  cause now we send off the changed line to
+# OUTPUT, and we're ready to start looking for the idline of the next
+# sentence.
+
+sub process_input_lines { # \%file_changes,\@inputlines,\%input_idcodetext 
+    my ($rh_f_changes,$ra_inputlines,$rh_inhits) = @_;
+    my ($newcode, $inputline, $ra_info, $id, $changed);
+    my %f_changes = %$rh_f_changes;       # deref
+    my @inputlines = @$ra_inputlines; # deref
+    my %inhits = %$rh_inhits;      # deref
+    my @keys = sort by_number (keys %inhits); # get keys, in num. order
+    unless (@keys) {  # files with no hits just get copied without
+	foreach $inputline (@inputlines) { # any processing.  avoids errors
+	    print OUTPUT $inputline; # from using undefined values of
+	} # $key in $inhits{$key}
+	return;
+    }
+    my $switch = "idtext"; # initialize switch
+    my $key = shift @keys; # initialize key;
+    foreach $inputline (@inputlines) {
+	if ($switch eq "idtext") {
+	    ($ra_info,$id) = 
+		&check_idtext($inputline,\%f_changes,$inhits{$key});
+	    if ($ra_info) { # undef unless current sentence matched
+		            # something in the changefile
+		$switch = "code"; # now we're looking for a codeline
+	    } 
+	    if ($id) { # undef unless $inputline was an idline
+		unless ($key = shift @keys) { # advance key for inhits
+		    $key = 0; # hack to avoid errors when processing last
+		}  # clause in input file, cause there's nothing there the
+	    }   # last time, but the shift still  happens in the middle of
+	} #  the clause, before the last few lines have been processed
+	elsif ($switch eq "code") {
+	    ($inputline,$changed) = &process_code($inputline,$ra_info,$id);
+	    if ($changed eq "yes") {  # if that was the codeline, then
+		$switch = "idtext"; # we're back to looking for idlines
+	    }
+	}
+	else {
+	    print "integratecodes: Error!\n";
+	    die "Invalid value for \$switch: $switch\n";
+	}
+	print OUTPUT $inputline;
+    }
+}
+#
+#####
+
+#####
+# subroutine &check_idtext.  takes the current line, a reference to
+# the array of arrays for the changes for this inputfile, and a
+# reference to the array containing the id code and text of the
+# current input sentence.  uses a couple of unlesses instead of ifs to
+# make things easier to keep track of.  so the first things is we
+# check whether the current line is an id line.  if not, we're done,
+# pass two null strings back to &process_input_lines so it knows
+# what's up.  if so, we store the actual id string in $lineid.  only
+# then do we need to bother with dereferencing the two arguments that
+# were references to arrays.  we then make sure that the lineid
+# matches up with the id of the current sentence supplied by the
+# inputfile array.  this is just a consistency check to make sure that
+# nothing has gone wrong.  should only be a problem if there's a bug
+# in the script.  then we go through the array of arrays from the
+# changefile.  for each change, we check to see whether both the id
+# and the text match up with what's been supplied for the current
+# sentence from our input_ict.  this is where the variable comes in
+# handy: we can't look ahead in the input file itself to check the
+# text, cause we have to go line by line, so instead of checking the
+# file itself, we check the record of the file that we made previously
+# in the ict array.  if everything matches up, then we know that the
+# current line is the start of a sentence that will need to be
+# changed.  we return to &process_input_lines the code for this
+# sentence supplied from the changefile, along with the idstring.  the
+# code tells it that we've found what we were looking for, and of
+# course will be needed to make the change in the coding line.  the id
+# also serves a dual purpose: it tells &process_input_lines that it
+# can advance to the next sentence in @in_hits, and it will also be
+# sent along later when the coding line is actually changed so that a
+# record can be made of which ids have been successfully changed.  if
+# stuff doesn't match up, then we've got the start of a sentence, but
+# it's not a sentence that needs to be changed, so we send back an
+# empty string followed by the id.  the id again tells
+# &process_input_lines to move to the next element in @in_hits.  v2.1
+# added line with push @ch_made ... to count changes made in the same
+# format as changes that need to be made, so they can be compared at
+# the end to see if anything in the changefile was missed.
+
+# the id line check here should be using the same code as the find_id
+# subroutine above.  as of 19.4.2005 it is.  some of this stuff should
+# probably go into the module file, though.
+
+
+sub check_idtext { # $line, \%changeict, \@single_ict
+    my ($line,$rh_f_changes,$ra_inhit) = @_; # arguments
+    my ($short_chid, $line_id);
+    unless ($line_id = &find_id("in", $line)){ 
+	return("",""); # not an id line, skip the rest!
+    }
+    my %f_changes = %$rh_f_changes; # dereference arg 
+    my @in_hit = @$ra_inhit;   # ""
+    my $in_id = $in_hit[0];
+    my $in_text = $in_hit[2];
+    unless ($line_id eq $in_id) { 
+	print "integratecodes: Error!\n"; 
+	die "Current line and in_hit array out of whack\n";
+    }
+#    print "\n$in_id\n"; #debug
+    while (my ($key,$ra_chhit) = each %f_changes) { # go through changes hash
+	my @ch_hit = @$ra_chhit; # dereference
+	my $ch_id = $ch_hit[0];
+	my $ch_text = $ch_hit[2];
+#	my $safecode = quotemeta $ch_hit[1]; # make code regex safe 
+	my $safecode = $ch_hit[1]; # try without quotemeta 5.10.2005
+	my $ra_info = [$ch_id, $in_id, $in_text, $safecode];
+#	print "\n$in_id trying $ch_id\n";#debug
+	if ($ch_text eq $in_text) { # changetext eq inputtext?
+#	    print "In: $in_text\nCh: $ch_text\n\n";#debug
+	    if ($ch_id eq $in_id) { # changeid eq inputid?
+		delete $ch_left{$key};
+		return ($ra_info,$line_id); # send back info about change 
+	    }                    # and the id for diagnostic purposes
+	    elsif ($opt_t) {     # text-centered, non-strict id matching
+		if ($ch_id =~ /(([A-Z]+.+),.*)\.\d+/) { # lop off final
+		    $short_chid = $1;
+		    if ($in_id =~ /$short_chid/) { # if this matches
+			delete $ch_left{$key};
+			return ($ra_info,$line_id); # send back info 
+		    }                        # and lineid
+		    elsif ($short_chid =~ /^LATIMER,\d+(,([PL]))/) { 
+                        # hack to deal with LATIMER ID change
+			my ($old, $new) = ($1, $2);
+			$short_chid =~ s/$old/$new/;
+			if ($in_id =~ /$short_chid/) { # if this matches
+			    delete $ch_left{$key};
+			    return ($ra_info,$line_id); # send back info 
+			}       
+		    }
+		    else { # same text but different ids
+			push @mismatch, $ra_info; # save mismatch
+		    }
+		}
+		else {
+		    die "Id string $ch_id has unexpected form!";
+		}
+	    }
+	}	
+    }
+    return("",$line_id); # doesn't match any of the changes
+}
+#
+#####
+
+#####
+# subroutine &process_code.  takes an inputline, a new code and an id
+# string.  it tests whether the current line is a coding line.  if
+# not, it returns to &process_input_lines with the message that it
+# hasn't found the line to change yet.  if it is a coding line, then
+# it isolates the old coding string, and subsitutes to new code for
+# that.  it then records its actions.  if the -n flag is set it counts
+# how many times each code string is used in changes.  if -D, it
+# records the idstring, the old code and the new code for each change.
+# the info is stored in global variables which can be used to report
+# exactly what's been done by the script.  the current line is always
+# returned, whether it's been changed or not, cause it will always
+# need to be printed to OUTPUT.
+
+sub process_code {    # $inputline, $ra_info, $id
+    my ($line,$ra_info,$id) = @_;
+    my @info = @$ra_info;
+    my $code = $info[3];
+    my $changed;
+    if ($line =~ /\(.*? \(.*?CODING (.+?)\)/) {
+	my $oldcode = $1;
+	$_ = $line;
+	s/$oldcode/$code/;
+	$line = $_;
+	my $ra_change = [@info, $oldcode];
+            # now: change_id line_id text newcode oldcode
+	push @ch_made, $ra_change;
+	$changed = "yes";
+    }
+    else {
+	$changed = "no";
+    }
+    return ($line,$changed);
+}
+#
+#####
+# end of subroutine group &process_input_lines, &check_idtext and
+# &process_code.
+##########
+
+##########
+#####
+# reporting subroutine group.  contains functions for processing and
+# handling the reporting of results.
+
+#####
+# subroutine &get_sketchy.  partitions changes into two groups: those
+# made based on complete id plus text matches and those made based on
+# partial id plus text matches.  the latter are called sketchies, the
+# former non_sketchies.
+
+sub get_sketchy {
+    my (@sketchies,@non_sketchies);
+    foreach my $ra_change (@ch_made) {
+	my @change = @$ra_change;
+	if ($change[0] eq $change[1]) {
+	    push @non_sketchies, $ra_change;
+	}    
+	else {    
+	    push @sketchies, $ra_change;
+	}
+    }
+    return (\@sketchies,\@non_sketchies);
+}
+#
+#####
+
+#####
+# given an array of references to arrays of detailed info about
+# changes, it formats and prints the ids and codes involved in each
+# change.
+
+sub detailed_report {
+    my $counter;
+    printf "\tInput_Id\t     Changefile_Id\t  Oldcode      Newcode\n";
+    for my $ra_ch (@_) {
+	my @ch = @$ra_ch;
+	printf "%-20s %-20s %-8s %-8s\n", $ch[1], $ch[0], $ch[4], $ch[3];
+	++$counter;
+    }
+    return $counter;
+}
+#
+#####
+# end of report subroutine group
+##########
+
+##########
+# main body of the script starts here.
+#####
+
+{ # bare block for variable scope
+
+##### option-handling stage
+
+# resolve dependencies between the various reporting options
+
+    if ($opt_v) { # verbose means report number, Detailed and misses
+	$opt_n = "on";
+	$opt_D = "on";
+	$opt_m = "on";
+    }
+
+    if ($opt_n || $opt_D || $opt_m) { # ignore -s when any of these is on
+	$opt_s = "";
+    }
+
+# setup log file if specified
+
+    if ($opt_l) {
+	open LOG, ">$opt_l" || die "Couldn't open $opt_l: $!";
+	$log = "LOG";     # all reporting will go to $log, which is LOG
+    }                     # if -l was specified...
+    else {
+	$log = "STDOUT";  # and STDOUT otherwise
+    }
+
+# process replacements file if specified
+
+    if ($opt_r) {
+	open RC, "<$opt_r" || die "Couldn't open runcontrol file $opt_r: $!";
+	while (<RC>) {
+	    next if (/^\n/);
+	    next if (/^#/);
+	    if (/^\s*(\w+):\s*(.*)/){
+		my ($scope, $substitution) = ($1, $2);
+		if ($scope eq "all") {
+		    push @global_subst, $substitution;
+		}
+		elsif ($scope eq "change") {
+		    push @change_subst, $substitution;
+		}
+		elsif ($scope eq "input") {
+		    push @input_subst, $substitution;
+		}
+		else {
+		    die "Unknown replacement scope on line $. of runcontrol", 
+		    " file $opt_r\n";
+		}
+	    }
+	    else {
+		die "Malformed command on line $. of runcontrol file", 
+		" $opt_r\n";
+	    }
+	}
+    }
+
+##### general stage
+
+# deal with stuff that is independent of inputfile
+
+# call the routine that deals with the change file, returning all the
+# changes, stored in the variable %changes, which is kept local to the
+# block surrounding the script body.  copy it to the global %ch_left.
+# %changes will be left alone and be used in the reporting stage to
+# determine the number of changes specified in the changefile.  it's
+# never touched by the subroutines, so it is properly local to the
+# main body.  %ch_left, however, is what the subroutines will deal
+# with, with changes being deleted from it as they are made.  this
+# should increase efficiency in the latter part of the run, since
+# there will be less changes to consider, will ensure that the same
+# change isn't accidentally made twice, and then will be used in the
+# reporting stage to figure out what changes have been missed.
+
+    print "Processing changefile...\n" if $opt_p;
+    my %changes = &process_changefile;
+    %ch_left = %changes;
+    $outdir = &get_outdir($opt_d); # get directory for output file(s)
+
+##### input-file stage
+
+# go through the input files named on the command line.  for each we
+# read its lines into the @inputlines array, run &idcodetext, storing
+# the ids, codes and texts in the array of references to arrays
+# @input_idcodetext.  using that, &restrict_by_text produces a much
+# reduced version of the @changes array for this file called
+# @file_changes.  [&strip_ambig was here in previous versions,
+# throwing out changes involving sentences with ambiguous ids.]  then
+# we open the associated output file and call &process_input_lines on
+# the input lines from the file, sending along @file_changes and
+# @input_idcodetext to steer the processing.  we actually pass
+# references to the three arrays so that they can be properly
+# separated within the subroutine.  once we get back from
+# &process_input_lines, we close the output file, and move on to the
+# next input file.  added use of basename in v2 for proper handling of
+# filenames, to allow script to be run from any directory.
+    
+    $| = 1 if $opt_p;
+    print "Processing inputfiles" if $opt_p;
+    foreach my $inputfile (@ARGV) {
+	print "." if $opt_p;
+	my @inputlines = &read_file($inputfile);
+	my %input_idcodetext = &idcodetext("in", @inputlines);
+#	print "##${$input_idcodetext{0}}[0]##\n"; #debug
+	my $rh_file_changes = &restrict_by_text(\%input_idcodetext,\%ch_left);
+	my %file_changes = %$rh_file_changes; 
+	my $filename = basename($inputfile);
+	open OUTPUT, ">$outdir/$filename" || die "Couldn't open $outdir/$filename: $!";
+	&process_input_lines(\%file_changes,\@inputlines,\%input_idcodetext);
+	close OUTPUT or warn "Error closing file $outdir/$filename: $!\n";
+    }
+    $| = 0 if $opt_p;
+    print "\nDone!\nReporting results...\n" if $opt_p;
+
+##### reporting stage
+
+    select $log;
+# by default we just report the total number of changes made.
+# -s (silent) says don't report anything at all.
+
+    exit if ($opt_s); # silent mode, don't report a thing
+    unless (@ch_made) {             # if nothing happened, 
+	print STDOUT "No changes made!\n"; # report as much, 
+	exit;                       # and we're done
+    }
+
+# -D (also implied by -v verbose) says report detailed info on the
+# changes made
+
+    print "\n";
+    if ($opt_D) {
+	if ($opt_t) { # distinguish full from partial match changes
+	    my ($ra_sketchy,$ra_non_sketchy) = &get_sketchy(@ch_made);
+	    my @sketchy_ch_made = @$ra_sketchy;
+	    my @non_sketchy = @$ra_non_sketchy;
+	    if (@sketchy_ch_made) {  
+		print "The following changes were made with partial id matches:\n";
+		my $counter = &detailed_report(@sketchy_ch_made);	
+		print "Total text-match changes: $counter\n\n";
+	    }
+	    if (@non_sketchy) {
+		print "The following changes were made with full id matches:\n";
+		my $counter = &detailed_report(@non_sketchy);	
+		print "Total full-match changes: $counter\n\n";
+	    }
+	    if (@mismatch) {
+		my $counter;
+		print "The following sentences matched in text, ";
+		print "but not in ids, and weren't changed:\n";
+		print "\tInput_Id\t     Changefile_Id\t  Newcode\n";
+		for my $ra_mm (@mismatch) {
+		    my @mm = @$ra_mm;
+		    printf "\t%-20s %-20s %-8s\n", $mm[1], $mm[0], $mm[3];
+		    ++$counter;
+		}
+		print "Total text-match non-changes: $counter\n\n";
+	    }
+	}
+	else { # -D not -t, all changes are full matches
+	    print "The following changes were made:\n";
+	    &detailed_report(@ch_made);	
+	} # no total reported, cause this will be the same as the one
+    }     # reported at the end
+
+# -n (also implied by -v verbose) says report how many times each
+# -particular coding string was used in making changes.
+
+    if ($opt_n) {
+	my %codes_used;
+	foreach my $ra_change (@ch_made) {
+	    my @change = @$ra_change;
+	    ++$codes_used{"$change[3]"};
+	}
+	print "The following codes were used:\n";
+	for my $code_used (sort (keys %codes_used)) {
+	    printf "\t%-8s %g\n", $code_used, $codes_used{$code_used};
+	}
+	print "\n";
+    }
+    
+# -m (also implied by -v verbose) says report on changes that were missed
+
+    if ($opt_m) { 
+	if (%ch_left) {
+	    print "The following changes were missed:\n"; 
+	    print "Changefile_Id\t     Newcode Text\n";
+	    my $counter;
+	    for my $key (sort by_number (keys %ch_left)) {
+		my $ra_miss = $ch_left{$key};
+		my @miss = @$ra_miss; # deref
+		printf "%-22s %-8s %-.47s\n", $miss[0], $miss[1], $miss[2];
+		++$counter;
+	    }
+	    print "Total misses: $counter\n\n";
+	}
+	else {
+	    print "No misses!\n";
+	}
+    }
+
+# finally, we report the total number of changes in the changefile and
+# the total number of changes made.
+
+    my $num_changes = keys %changes;
+    my $num_ch_made = @ch_made;
+    printf "%-40s %5g\n", "Number of sentences in the changefile:", 
+    $num_changes;
+    printf "%-40s %5g\n", "Number of codes successfully changed:", 
+    $num_ch_made;
+    printf STDOUT "%-40s %5g\n", "Number of codes successfully changed:", 
+    $num_ch_made if $opt_l; # print something to STDOUT so the user knows 
+                            # it worked without examing logfile 
+} # close bare block surrounding script body
+
+close LOG if $opt_l or warn "Error closing log file: $!\n"; 
+# just to shut up warnings for using LOG only once

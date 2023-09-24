@@ -1,0 +1,410 @@
+#!/usr/bin/perl 
+
+
+# codefinder v0.5.3 copyright 2005 Thomas McFadden
+
+# This file is part of CsPTools.
+
+#    codefinder is free software; you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation; either version 2 of the License, or
+#    (at your option) any later version.
+
+#    codefinder is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+
+#    You should have received a copy of the GNU General Public License
+#    along with Foobar; if not, write to the Free Software
+#    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+
+
+# the pretty printing fails miserably when the codes are too long.
+# have to fix.
+
+use warnings;
+use strict;
+use CsPTools('find_code_string', 'is_known_code', 'determine_code_type',
+	     'get_known_codes', 'get_cspt_version');
+use Getopt::Long;
+Getopt::Long::Configure('no_auto_abbrev');
+Getopt::Long::Configure ("bundling");
+my $version = my $help = '';
+our ($opt_c, $opt_m, $opt_q, $opt_a, $opt_s, $opt_u, $opt_v, $opt_k,
+     %counter, %hits, @known_codes);
+GetOptions ('help|h' => \$help,  # declare long options
+	    'version|v' => \$version,
+	    'codesfile|c=s' => \$opt_c,
+	    'individual|i' => \$opt_m,
+	    'question|q' => \$opt_q,
+	    'machine|m' => \$opt_a,
+	    'unknown|u' => \$opt_u,
+	    'string|s=s' => \$opt_s,
+	    'verbose|V' => \$opt_v,
+	    'known|k' => \$opt_k) or die "Aborting...\n";
+
+my $version_number = "0.5.3";
+
+# bugfix 26.7.2005
+# first CsPTools version, 24.3.2005
+
+
+my $cspt_version = &get_cspt_version;
+
+# 0.5.3 makes some minor fixes in the graceful handling of potential errors 
+# and such.
+
+# 0.5.2 is just 5.1.0 gussied up for CsPTools release.  put a zero in
+# front, dropped the last digit, and incremented the second to last
+# digit.
+
+# codefinder version 5.1.0
+
+# Program to search all the coding strings in a corpussearch coding
+# file or files, and report on them.  
+
+# version 5.1.0 cleaned up the mess this script had become,
+# reimplimenting a lot of it from scratch, and moving stuff into the
+# .pm file.  the biggest change to point at is replacing the two
+# variables hits and counter with a single hits which does all the
+# work.  we had:
+
+# @hits{codestring}{filename} = linenumber
+
+# $counter{filename}{codetype}{codestring} = number of occurrences
+
+# now we have:
+
+# @hits{filename}{codetype}{codestring} = linenumbers
+
+# unfortunately, this seems to have slowed things down considerably,
+# but it works, and it's a hell of a lot easier to understand the code
+# now.  also added some new reporting options that were missing in the
+# past, allowing detailed prints of known codes, detailed prints of
+# multiple categories simultaneously, and the -v verbose option to do
+# a detailed print on everything.  in preparation for the package,
+# also added the --version and --help routines.
+
+# version 5.0.2 fixed another bug.  i had added the unless (%counter)
+# line in the previous version in order to avoid error statements in
+# case no codes are found.  the script reports the lack of codes and
+# exits gracefully instead of yielding an error for trying to print an
+# undefined variable.  what i had forgotten, though, is that when the
+# -s option is set, the %counter variable is not used, so even when
+# the -s searches were finding matching codes, since %counter remained
+# undefined, codefinder was reporting No codes found and exiting.
+# i've fixed the problem by making the -s option also store stuff in
+# %counter, so it all works.  this is a hack though, cause %counter
+# never actually gets used afterwards with -s or for that matter with
+# -q or -u.  this all comes back to the issue of having both %counter
+# and %hits because of the way that -s -q -u were bolted onto the old
+# version rather than being fully integrated in.  the script needs a
+# partial rewrite where the functionality of %counter and %hits is
+# integrated into one variable.  that will greatly simplify the code,
+# probably speed up the script, and avoid unforeseen problems like the
+# one i introduced in 5.0.1
+
+# version 5.0.1 fixes a little bug in the regex that finds coding
+# strings.  had to make the .* non-greedy so as to match only up to
+# the first right parenthesis, in case there's more stuff following
+# the coding string on the same line.
+
+# version 5 adds massive new functionality.  it is now possible to
+# specify codes that are of interest and have codefinder report not
+# just what files they occur in and how often, but also the
+# linenumbers.  there are two ways to do this.  with the -q, -a or -u
+# flag, you can tell codefinder to give this info on a category of
+# code, question, machine or unknown respectively.  with the -s flag
+# you can specify a string, which can contain a regular expression,
+# and the info will be reported about every code that matches that
+# regular expression.  the printing of this info presented some
+# problems, because one doesn't know how many times a given code will
+# occur in a given file, so the linenumber array can't really be used
+# in a printf.  so instead i wrote a nice little routine that goes
+# through the linenumbers 8 at a time and prints them on a line, then
+# moves to the next 8 and so forth until all have been printed.
+
+# as before, a file with a list of known codes can be supplied on the
+# command line with the -c option, and a file to be written to can be
+# specified with the -f option.  the coding file(s) to search is/are
+# given as the command line arguments.  if there are multiple input
+# files, then by default they are all reported on together (though as
+# of v5 they are no longer processed together, but individually).  if
+# the -m option is specified, then the files are searched and reported
+# on separately.
+
+# as of sept. 10th 2004, the codes are finally reported in sorted
+# order.  duh.
+
+# need to add ability to deal with .cod files with more than one
+# column of codes!
+
+# could add in the ability to compare two files in terms of their
+# coding, although that's maybe a bit far-fetched.
+
+# there's also a lot of unnecessary duplication of code in here.  the
+# sortcodes subroutine should be broken down, and a lot of the special
+# handling of options should be moved out of there and into the
+# reporting stage, since we need it there anyway.  there should only
+# be one hash and it should record everything, and then the reporting
+# stage can sort out how much needs to be reported on what.
+
+sub version {
+    print "codefinder v$version_number (CsPTools v$cspt_version)\n";
+}
+
+if ($version) {
+    &version;
+    exit;
+}
+
+if ($help) {
+    my $format = "%3s %-12s %-8s %s\n";
+    print "\n\n";
+    print "This is "; 
+    &version;
+    print "\n\tFind (single-column) coding strings in CorpusSearch output files,\n"; 
+    print "\tclassify and report on them.\n\n";
+    print "Usage:\n\tcodefinder [options] file(s)\n\n";
+    print "Command-line options:\n";
+    printf $format, "-c,", "--codesfile", "<file>", 
+    "Use <file> as list of known codes";
+    printf $format, "-h,", "--help", "", "Print this helpful message";
+    printf $format, "-i,", "--individual", "", 
+    "Report on multiple files individually";
+    printf $format, "-k,", "--known", "", "Detailed report on known codes";
+    printf $format, "-m,", "--machine", "", 
+    "Detailed report on machine codes";
+    printf $format, "-q,", "--question", "", 
+    "Detailed report on question codes";
+    printf $format, "-s,", "--string", "<regex>", 
+    "Detailed report on code strings matching <regex>";
+    printf $format, "-u,", "--unknown", "", "Detailed report on unknown codes";
+    printf $format, "-V,", "--verbose", "", "Detailed report on all codes";
+    printf $format, "-v,", "--version", "", "Print version information";
+    print "\n";
+    exit;
+}
+
+#####
+# get_codes, using functions from CsTools.pm, processes a file,
+# finding the coding strings within it, classifying them by type and
+# storing each along with the file and linenumber in which it occurs.
+# in order to get the linenumbers right, we need to get the filehandle
+# in here instead of just an array containing the lines.  the
+# filehandle actually comes in as a typeglob, cause filehandles
+# themselves can't be passed.  &find_code_string from the .pm file
+# takes a line, figures out if it's a coding line, and if so pulls out
+# the coding string and returns it.  &determine_code_type from the .pm
+# file takes the code and an array containing the known codes and then
+# figures out whether the code is Machine, Question, Known or unknown,
+# returning the appropriate type as a string.
+
+sub get_codes {
+    my $code;
+    my $file = shift; # 1st argument is the filename
+    local (*IN) = @_; # second argument is typeglob containing filehandle
+    while (<IN>) { # go through input lines
+	if ($code = &find_code_string($_)) { # from CsPTools.pm
+	    if ($opt_s) {                 # string option
+		if ($code =~ /$opt_s/) {  # check if matches string
+		    push @{ $hits{$file}{"String"}{$code} }, $.;
+		}
+	    }       
+	    else {  
+		my $code_type = &determine_code_type($code,@known_codes); #.pm 
+		push @{ $hits{$file}{$code_type}{$code} }, $.;
+	    }
+	}
+    }
+}
+#
+#####
+
+#####
+# detailed_print takes a string naming a code type and does a full
+# fancy printout of all the information on the codes of that type
+# found.  the big while loop handles the printing of the line numbers.
+# this can't be done simply with printf because in many instances
+# there's way more numbers than could fit on a line.  so it breaks
+# them up into groups of 8 and does them one line at a time.  this has
+# been slightly altered in version 5.1 to eliminate the need for a
+# goto statement.  the first line of line numbers starts automatically
+# at the right spot because the printf statement that prints the code
+# string puts in the spaces after the code.  subsequent lines have to
+# be indented though, and the $notfirst variable is what triggers the
+# different handling of the first line from the subsequent ones.  in
+# version 5.1, with the reimplementation combining the old %counter
+# and %hits into the single %hits variable, the ordering of code
+# string and filename within the variable has changed, so now with go
+# through files first, then codes.  since codes are much shorter than
+# filenames, this means that the old indentation before the
+# linenumbers is more than necessary.  i could change this, or i might
+# rewrite the loops to get the other order back, but that might be
+# more trouble than it's worth.  i've moved in here as well the
+# printing of all headings, because only here is it easy to make sure
+# that there were hits of a certain kind and thus to avoid printing
+# headers for code types that haven't actually been found.  since this
+# has to be done within the file loop, we have to add a condition so
+# that the printing only happens the first time through, hence the
+# variable $first.
+
+sub detailed_print {
+    my $total;
+    my $code_type = $_[0];
+    my $first = "yes";
+    for my $file ( sort case_insens ( keys %hits ) ) { # cycle through files
+	if ($hits{$file}{$code_type}) { # make sure we have some hits
+	    if ($first eq "yes") { # if this is the first to be printed,
+		$first = "no"; # next time won't be the first
+		print "#####################\n"; # print the headings
+		if ($code_type eq "String") {
+		        print "The following codes matched regular",
+			" expression /$opt_s/:\n\n";
+		}
+		else {
+		    print "The following $code_type codes were found:\n\n";
+		}
+		printf "%s\t%-30s%-30s\n", "File", "Code", 
+		"Linenumber(s)";
+	    }
+	    print "$file\n"; 
+	    my $code;
+	    for $code (sort case_insens (keys %{$hits{$file}{$code_type}})) { 
+		printf "\t%-30s", $code; # cyle through the codes
+		my $notfirst; # initializes as null, means first
+		while (@{ $hits{$file}{$code_type}{$code}}) { 
+		    my $spaces = " " x 38; # indentation for notfirst lines
+		    if (@{ $hits{$file}{$code_type}{$code}} < 9) { # < 9 codes
+			print $spaces if $notfirst;  # left, print them all
+			while (@{ $hits{$file}{$code_type}{$code}}) {
+			    print "${ $hits{$file}{$code_type}{$code}}[0] ";
+			    ++$total;
+			    shift @{ $hits{$file}{$code_type}{$code}};
+			}
+			print "\n";
+		    }
+		    else { # if 9 or more codes are left
+			print $spaces if $notfirst;
+			for (1..8) { # print the next 8
+			    print "${ $hits{$file}{$code_type}{$code}}[0] ";
+			    ++$total;
+			    shift @{ $hits{$file}{$code_type}{$code}};
+			}
+			print "\n";  
+			$notfirst = "yes"; # we've just printed a line so the
+		    }                      # next one can't be the first
+		}	
+	    }
+	} 
+    }
+    if ($first eq "no") { # print footer (if something's actually been printed)
+	if ($code_type eq "String") {
+	    print "\nTotal codes matching regex /$opt_s/: $total\n";
+	}
+	else {
+	    print "\nTotal $code_type codes: $total\n"; 
+	}
+	print "#####################\n\n"; 
+    }
+}                           
+#
+#####
+
+sub case_insens { "\L$a" cmp "\L$b" } # define case-insensitive sort
+
+
+##################
+##### 
+# main body starts here
+
+# process options
+
+if ($opt_q || $opt_a || $opt_u || $opt_s || $opt_v) { # these options only 
+    $opt_m = "yes";     # make sense if files are processed separately
+}
+
+# &get_known_codesm, from CsPtool.pm, checks for a file of known
+# codes, first as argument of -c, then under the name codes in the
+# current directory.
+
+@known_codes = &get_known_codes;
+
+# deal with the input files specified on the command line.  the files
+# are always processed individually.  the -m flag just means that the
+# results are recorded separately in %hits.  if -m is not set, then
+# instead of passing the actual name of the file to &get_codes each
+# time, we pass the identical string "allfiles", so that the results
+# for all the files are stored together in %hits.
+
+for my $file (@ARGV) { # cycle through files
+    open (INPUT, "< $file") || die "Can't open $file for input: $!\n";
+    $file = "allfiles" unless $opt_m; # pretend all files are the same
+    &get_codes($file,*INPUT); # pass typeglob containing filehandle
+    close INPUT or warn "Error closing file $file: $!";
+}                             
+
+# now report the findings.  this is done differently depending on the
+# various options set.  there's one way it's done for -a, -u, -q and
+# -s i.e. detailed reporting based on category.  then there's the
+# default old way, where all codes are reported on, but not with the
+# additional line-number details.
+
+if (! %hits) { # if there were no codes found, quit here.
+    print "No codes found\n";
+    exit;
+}
+
+# the various types of detailed printing are all the same except for
+# the heading and the string indicating the code type passed to the
+# &detailed_print subroutine that does all the work.  this is now
+# implemented so that various detail options can be combined (-s is
+# still exclusive though, cause in the current implementation it
+# prevents other codes from even being stored in %hits.  could change
+# that maybe.)  added new options -k to report on known codes and -v
+# verbose to get the detailed print on everything.
+
+if ($opt_k || $opt_v) {
+	&detailed_print("Known");
+}
+if  ($opt_a || $opt_v) {
+    &detailed_print("Machine");
+}
+if ($opt_q || $opt_v) {
+    &detailed_print("Question");
+}
+if ($opt_u || $opt_v) {
+    &detailed_print("Unknown");
+}
+if ($opt_s) {
+    &detailed_print("String");
+}
+
+# if neither -a, -q, -u, -k, -v or -s, the old way to print
+unless ($opt_q || $opt_a || $opt_u || $opt_s || $opt_k || $opt_v) { 
+    my ($file, $code_type, $code, $count, %total, $tc, %filetotal, 
+	$tf, $gtotal);
+    print "#####################\n";
+    for $file ( sort case_insens ( keys %hits )) { # go through the input files
+	print "File: $file\n" if ($opt_m); # only print filename if -m
+	for $code_type ( keys %{ $hits{$file} } ) { # go through code types
+	    print "$code_type codes:\n ";   # print heading
+	    for $code (sort case_insens (keys %{$hits{$file}{$code_type}} )) { 
+		$count = scalar @{ $hits{$file}{$code_type}{$code}}; #shorthand
+		printf "\t%-15s %4g\n", $code, $count; # print with # of occ.
+		$total{$file}{$code_type} += $count; # add to class total
+	    }
+	    $tc = $total{$file}{$code_type}; # another shorthand variable
+	    printf "\n\t%-15s %4g\n", "Total $code_type", $tc; 
+	    $filetotal{$file} += $tc; # add class total to file total
+	}
+	$tf = $filetotal{$file}; # one more shorthand
+	printf "\n%s %4g\n", "Total from $file", $tf if ($opt_m); # only print
+	                                                   # file total if -m
+	$gtotal += $tf; # add class total to grand total
+	print "#####################\n";
+    }
+    printf "Grand total\t%12g\n", $gtotal; # print grand total
+    print "#####################\n\n\n";
+}

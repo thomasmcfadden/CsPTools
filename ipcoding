@@ -1,0 +1,126 @@
+#!/usr/bin/perl 
+
+# ipcoding v0.1.2 copyright 2005 Thomas McFadden
+
+# This file is part of CsPTools.
+
+#    ipcoding is free software; you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation; either version 2 of the License, or
+#    (at your option) any later version.
+
+#    ipcoding is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+
+#    You should have received a copy of the GNU General Public License
+#    along with Foobar; if not, write to the Free Software
+#    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+
+
+# 0.1.2 adds minor better handling of potential errors
+
+# 0.1.1 is just v1 gussied up for CsPTools release.  added a zero in
+# front and another behind and then incremented it for the addition of
+# the CsPTools stuff.
+
+# this script is to fix up an old style coding file to be like a new
+# style one, i.e. it moves the CODING business inside the IP.
+
+# this is it's the first script to use the new CsPTools module, i.e. my
+# first module-using code!  
+
+# anyway, the script is very simple.  as with integratecodes, the
+# files are not edited in place, rather copies are made and altered in
+# a different directory, but with the same names as the original
+# files.  the command line arguments are the files to run on, and an
+# output directory can either be specified with the -d flag or will be
+# queried of the user interactively.
+
+use strict;
+use warnings;
+use File::Basename;
+use Getopt::Long;
+Getopt::Long::Configure ("bundling");
+use CsPTools ('request', 'read_file','get_outdir', 'find_code_string', 
+	      'get_cspt_version');
+
+our ($counter, $opt_d, $out_dir, $help, $version);
+
+GetOptions ('d|dir=s' => \$opt_d,
+	    'h|help' => \$help,
+	    'v|version' => \$version,
+	    ) or die "Aborting...\n";
+
+
+my $version_number = "0.1.2";
+my $cspt_version = &get_cspt_version;
+
+sub version {
+    print "ipcoding v$version_number (CsPTools v$cspt_version)\n";
+}
+
+if ($version) {
+    &version;
+    exit;
+}
+
+if ($help) {
+    my $format = "%3s %-12s %-8s %s\n";
+    my $indent = "\t\t\t    %-50s\n";
+    print "\n\n";
+    print "This is ";
+    &version;
+    print "\n\tChange old style coding files to new style ones, i.e. move CODING\n\tnode inside IP.\n\n";
+    print "Usage:\n\tipcoding [options] inputfiles\n\n";
+    print "Command-line options:\n";
+    printf $format, "-d,", "--dir", "<dir>", "Use <dir> for output files";
+    printf $format, "-h,", "--help", "", "Print this helpful message";
+    printf $format, "-v,", "--version", "", "Print version information";
+    exit;
+}
+
+$out_dir = &get_outdir($opt_d);  # checks -d or queries to get output dir
+foreach my $input_file (@ARGV) { # go through files
+    my @input_lines = &read_file($input_file);
+    my $out_file = basename($input_file);
+    open OUTPUT, ">$out_dir/$out_file" || die "Couldn't open $out_dir/$out_file: $!";
+    select OUTPUT;
+    my $coding_string;
+    my $switch = "coding"; # switch determines whether we're looking for line 
+                           # with IP label or coding string
+    foreach (@input_lines) {
+	if ($switch eq "ip") {
+#	    print "Looking for IP\n";
+	    if (/(\(.*IP[^\(]*)(\(.*\n)/) { # split up into IP label and
+		                            # first daughter
+#		print "Found an IP line\n";
+		my $output_line = "$1$coding_string            $2";
+		 # string together IP label, coding string, first daughter
+		$switch = "coding";
+		print "$output_line";
+                 # still on same line where CODING was taken from
+	    }
+	    else {
+		print "Line doesn't match expected IP pattern!";
+	    }
+	}
+	else {
+	    if (/.*(\(\d+ CODING .*?\)\n)/) { # find CODING line
+		$coding_string = $1;
+		my $quoted_coding_string = quotemeta $coding_string; # meta
+		s/$quoted_coding_string//; # delete it from line
+		print "$_"; # print line (without newline!)
+		++$counter; # count
+		$switch = "ip"; # set to look for IP
+	    }
+	    else {        # if not CODING line
+		print $_; # print unchanged
+	    }
+	}
+    }
+    close OUTPUT or warn "Error closing output file: $!\n";
+}
+select STDOUT;
+print "Total codes moved: $counter\n";

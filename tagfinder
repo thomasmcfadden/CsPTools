@@ -1,0 +1,161 @@
+#!/usr/bin/perl -w
+
+# 5.9.2007 adding reverse orderings
+
+# tagfinder v0.2.2 copyright 2005 Thomas McFadden
+
+# This file is part of CsPTools.
+
+#    tagfinder is free software; you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation; either version 2 of the License, or
+#    (at your option) any later version.
+
+#    tagfinder is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+
+#    You should have received a copy of the GNU General Public License
+#    along with Foobar; if not, write to the Free Software
+#    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+
+# 0.2.2 fixes handling of short options.
+
+# 0.2.1 is just an update of v2 renumbered for CsPTools.
+
+# version 2 of tagfinder.  
+
+# based on vbnfinder, but attempting to be more general, allowing user
+# to specify which tag is being searched for instead of hardcoding it
+# into the regexp here.
+
+# there are now three output format options.  the default is the old
+# behavior where the each form is listed with the number of times it
+# appears, the forms being in alphabetical order.  if the -n flag is
+# set, the the forms are instead sorted by the number of times they
+# appear, most common forms first.  if the -l flag is set, the forms
+# are listed in alphabetical order, but instead of being followed by
+# the number of times they were found, they're followed by the list of
+# line numbers where they were found.  -n is ignored if -l is set.
+
+use warnings;
+use Getopt::Long;
+Getopt::Long::Configure ("bundling");
+use CsPTools ('get_cspt_version');
+GetOptions ('t|tag=s' => \$opt_t,
+	    'l|linenum' => \$opt_l,
+	    'n|number' => \$opt_n,
+	    'v|version' => \$version,
+	    'h|help' => \$help,
+	    'r|reverse' => \$opt_r,    # reverse sort order
+	    ) or die "Aborting...\n";
+
+my $version_number = "0.2.2";
+
+# second CsPTools version, 12.7.2005
+
+my $cspt_version = &get_cspt_version;
+
+sub version {
+    print "tagfinder v$version_number (CsPTools v$cspt_version)\n";
+}
+
+
+if ($version) {
+    &version;
+    exit;
+}
+
+if ($help) {
+    my $format = "%3s %-12s %-8s %s\n";
+    my $indent = "\t\t\t    %-50s\n";
+    print "\n\n";
+    print "This is "; 
+    &version;
+    print "\n\tFind all forms in a corpus file with POS tags matching\n";
+    print "\ta regular expression.",
+    "\n\n"; 
+    print "Usage:\n\ttagfinder [options] file(s)\n\n";
+    print "Command-line options:\n";
+    printf $format, "-h,", "--help", "", "Print this helpful message.";
+    printf $format, "-l,", "--linenum", "", "Print the linenumbers on which each form appears.";
+    printf $format, "-n,", "--number", "", "Sort forms by number of times they appear.";
+    printf $format, "-t,", "--tag", "<regex>", "Search POS tags matching <regex>";
+    printf $format, "-v,", "--version", "", "Print version information.";
+    print "\n";
+    exit;
+}
+
+$tag = $opt_t if $opt_t; # sets tag string we're looking for if -t was used
+
+unless ($tag) {                   # if that didn't work
+    print "Enter tag to find.\n"; # prompt for tag string
+    chomp ($tag = <STDIN>);
+}
+
+# no longer just matching hit line.   checking whole tree [13.12.2004].
+
+while (<>) {	#reads input from files specified in command line
+    s/\$//g;          # delete all occurrences of $
+    if (/\((\d+ )?(\S+) ([\S]*?)\)/) { # fixed for numbered nodes [28.3.2005]
+	$form = $3;     # additional step added 28.3.2005 to make match sloppy
+	if ($2 =~ /$tag/) { # for consistency with other scripts      
+	    if ($opt_l) { # if -l is set
+		push @{ $linenum{$form} }, $.; # creates hash of arrays, for   
+	    } # each form, a list of line numbers
+	    else {                  # if no -l,
+		push (@forms,$form); 	# then make a list of forms
+	    } # this step unnecessary.  the counter loop should just be here.
+	}
+    }
+}
+
+if ($opt_l) {
+    for $form ( sort case_insens (keys %linenum) ) { # cycle through the forms
+	print "$form: @{ $linenum{$form} }\n\n"; # report findings
+    }
+}
+else {
+    foreach $form (@forms) {
+	++$counter{$form}; 	#count occurrences of each form
+	++$total;               #and total forms.  should be up higher
+    }
+    if ($opt_n) {
+	@order = sort by_value (keys %counter);	# sort forms found
+    }
+    else {
+	@order = sort case_insens (keys %counter);	# sort forms found
+    }
+    $opt_n = "foo";
+    print "-------------------------------------\n"; 
+    print "Output of $0: ";
+    print scalar localtime;
+    print "\n\n";
+    foreach $entry (@order) {
+	print "$entry ($counter{$entry})\n";
+	#print forms, ordered, with number of appearances
+    }
+    print "-------------------------------------\n";
+    print "Total forms: $total\n" if $total; #print grand total
+}
+
+# following sort subroutines have been modified 5.9.2007 to allow
+# reverse sorting.
+
+sub by_value { # define sort by counter value
+    if ($opt_r) {
+	$counter{$a} <=> $counter{$b};
+    } 
+    else {
+	$counter{$b} <=> $counter{$a};
+    }
+} 
+sub case_insens { # define case-insens. sort
+    if ($opt_r) {
+	"\L$b" cmp "\L$a";
+    }
+    else {
+	"\L$a" cmp "\L$b";
+    }
+} 

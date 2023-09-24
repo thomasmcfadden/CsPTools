@@ -1,0 +1,87 @@
+#!/usr/bin/perl
+
+# editcode v0.1.0 copyright 2005 Thomas McFadden
+
+# This file is part of CsPTools.
+
+#    editcode is free software; you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation; either version 2 of the License, or
+#    (at your option) any later version.
+
+#    editcode is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+
+#    You should have received a copy of the GNU General Public License
+#    along with Foobar; if not, write to the Free Software
+#    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+
+
+use strict;
+use CsPTools ('get_cspt_version');
+use Getopt::Long;
+Getopt::Long::Configure ("bundling");
+
+our ($help, $version, $opt_f);
+GetOptions ('h|help' => \$help,
+            'v|version' => \$version,
+	    'f|force' => \$opt_f,
+            ) or die "Aborting...\n";
+
+my $version_number = "0.1.0";
+my $cspt_version = &get_cspt_version;
+
+sub version {
+    print "editcode v$version_number (CsPTools v$cspt_version)\n";
+}
+
+if ($version) {
+    &version;
+    exit;
+}
+
+if ($help) {
+    my $format = "%3s %-12s %-8s %s\n";
+    my $indent = "\t\t\t    %-50s\n";
+    print "\n\n";
+    print "This is ";
+    &version;
+    print "\n\tSearch for codestrings matching a specified regular expression",
+    "\n\tin specified corpus files, and edit them in turn.\n\n";
+    print "Usage:\n\teditcode regex [file(s)]\n\n";
+    print "Command-line options:\n";
+    printf $format, "-f,", "--force", "", "Don't prompt before continuing to next example";
+    printf $format, "-h,", "--help", "", "Print this helpful message";
+    printf $format, "-v,", "--version", "", "Print version information";
+    print "\n";
+    exit;
+}
+
+
+my ($codestring, @files);
+die "Usage:\n\teditcode regex [file(s)]\n" unless ($codestring = shift @ARGV); 
+unless (@files = @ARGV) {
+    @files = glob "*";
+}
+my $first = 1;
+foreach my $file (@files) {
+    open FILE, "<$file" or die "Could not open file $file: $!";;
+    my @linenums;
+    while (<FILE>) {
+	if (/ING $codestring/) {
+	    push @linenums, $.;
+	}
+    }
+    close FILE or warn "Error closing file $file: $!\n";
+    foreach my $linenum (@linenums) {
+	unless ($first == 1 || $opt_f) {
+	    print "Enter to continue to next example, q to quit\n";
+	    chomp (my $ans = <STDIN>);
+	    exit if $ans eq "q";
+	}
+	$first = 0;
+	system("emacs +$linenum $file") or die "Could not start emacs\n";
+    }
+}

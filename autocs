@@ -1,0 +1,481 @@
+#!/usr/bin/perl
+
+
+# autocs v0.2.1 copyright 2005 Thomas McFadden
+
+# This file is part of CsPTools.
+
+#    autocs is free software; you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation; either version 2 of the License, or
+#    (at your option) any later version.
+
+#    autocs is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+
+#    You should have received a copy of the GNU General Public License
+#    along with Foobar; if not, write to the Free Software
+#    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+
+
+##### 
+# load packages and pragmas
+
+use warnings; 
+use strict;
+use File::Basename; #load basename module
+use CsPTools('get_cspt_version');
+use Getopt::Long;
+Getopt::Long::Configure ("bundling");
+
+my $version = my $help = my $opt_q = my $opt_i = my $opt_d = my $opt_s = my $opt_t = my $opt_a = my $opt_m = my $opt_o = '';
+
+#getopts("q:n:d:s:tamo");           # declare command-line options
+GetOptions ('h|help' => \$help,  # declare long options
+	    'v|version' => \$version,
+	    'q|query=s' => \$opt_q,
+	    'i|id=s' => \$opt_i,
+	    'd|dir=s' => \$opt_d,
+	    's|suffix=s' => \$opt_s,
+	    't|test' => \$opt_t,
+	    'a|auto' => \$opt_a,
+	    'm|manual' => \$opt_m,
+	    'o|overwrite' => \$opt_o) or die "Aborting...\n";
+
+my $version_number = "0.2.1";
+
+# second CsPTools version, 12.7.2005
+
+my $cspt_version = &get_cspt_version;
+
+#
+#####
+
+# v 0.2.1 fixes handling of short options.
+
+# version 0.2.0 is just 1.2.3, renumbered for release with CsPTools.
+# since this is the first actual release, everything's a beta and
+# should start with a zero.  0.1.2 or 0.1.3 wouldn't properly reflect
+# the amount this script has been developed or its stability level,
+# however, so i'm advancing it to 0.2.0.
+
+# version 1.2.3 increases portability: the system call to cs now
+# instead of literally calling cs as i had it uses an environment
+# variable $CS, where the user can put exactly how they call
+# corpussearch.  oh yeah.
+
+# version 1.2.2 adds --help and --version
+
+# wrapper script for corpussearch that adds some flexibility and
+# automation especially in searching multiple files and handling the
+# naming of output files.
+
+# version 1.2.1 just changed the way that corpussearch is called to
+# use the new version of corpussearch.  current way it's called is not
+# portable!
+
+# version 1.2, differs very little from 1.1 very little in user
+# functionality (addition of filetests for input files), but is a near
+# total rewrite, with most of the action moved out of the main portion
+# and into a series of subroutines.  this should make the program much
+# more maintainable and easier to expand.  it made it possible to
+# drastically reduce the use of global variables and actually follow
+# the use strict pragma!  could work as a preliminary move towards an
+# object-oriented structure, which may help a lot when creating the
+# planned fully interactive (maybe even graphical!) mode.
+
+# the script runs corpussearch individually on the files listed as
+# command line arguments, rather than running it once on all of them
+# together, which is what corpussearch does on its own.  it also
+# automatically generates the names of the output files according to a
+# schema based on the input file and the query file, specifically the
+# name of the input stripped of its extension, followed by an
+# underscore and the query identifier -- which will be the number that
+# starts the query name if there is one -- followed by the appropriate
+# extension, .out or .cod.  parts of this schema can be overridden, so
+# the identifier can be specified on the command line with the -i
+# option, and the extension with the -s option.  the query file can be
+# specified on the command line with the -q option, and the output
+# directory with the -d option.  the -q can actually be left off if
+# the first command line argument after all the options is a valid
+# query file name, i.e. ends in .q or .c.  anything that is not
+# specified on the command line and cannot be figured out from the
+# context will be asked for interactively.  automatic determination of
+# the identifier and extension can also be turned off with the -m
+# option, in which case they will also be asked for interactively.
+# the -a flag triggers extra automatic determination, which at the
+# moment only includes assuming "out" as the name of the output
+# directory.
+
+# the script now runs some elementary file tests to make sure the
+# query file and input file(s) exist and are readable, and that the
+# output file(s) do(es) not exist, in order to intercept potential
+# corpussearch errors.  with the query and input files, it reprompts
+# the user until one is given that exists and is readable.  with the
+# output file, it gives the user the options of either overwiting the
+# old file, overwriting all files from here on out, giving a new file
+# name or quitting.  the overwriting is actually done by having the
+# script delete the old file before calling corpussearch, in order to
+# avoid having to deal with unexpected interactivity from cs.  if the
+# -o flag is set, files are overwritten without asking.  these are
+# additional steps toward a fully interactive front end.
+
+# there's a test routine that can be run instead of the real searching
+# routine, by setting the -t flag.  it just prints the names of the
+# query file, input file(s) and output file(s) that have been
+# determined without actually calling CS.
+
+############
+# todo list
+##
+
+# add a way to deal with no command line arguments.  right now it
+# leads to a perl warning, which should be avoided.
+
+# dealing with the interactivity of CS is still a bit brutish.  the
+# handling of potential output file overwriting is a big step in the
+# right direction.  now under normal circumstances q should always be
+# the right response to corpussearch.  however, the current setup
+# using yes to get the q to corpussearch is not portable.  i should be
+# able to replace it, i think, with opening corpussearch as a
+# filehandle for writing.  re portability, i also need to use the
+# module that handles directory separators and such properly, cause
+# the way i handle them here won't work outside *n?x.
+
+# i'm currently losing a lot of speed because CS has to be restarted
+# again for every search.  i may be able to get around this and get a
+# significant performance boost by running all searches after the
+# first one from the CS-internal prompt, rather than passing q to it
+# and restarting CS.  this too should be possible by opening
+# corpussearch as a filehandle for writing.  this should also make it
+# possible to allow the specification of a series of queries to be run
+# in sequence on a given set of corpus files, which would be really
+# cool.
+
+# a whole default system needs to be worked out, utilizing
+# configuration files.  the configuration files could basically just
+# contain lines setting variable values, which could of course then be
+# overriden by whatever's on the command line.  one configuration file
+# in each user's home directory, and potentially another in each
+# directory to set special values there.  e.g. the output directory
+# default may be different from one directory to the next.
+
+# then develop a fully interactive mode, e.g. started by using autocs
+# without arguments and/or with the -i switch (the latter would be
+# good cause some stuff could then still be set on the command line
+# and used as defaults or whatever.  the fully interactive mode should
+# have a rudimentary command interface of its own, allowing the
+# setting of temporary or permanent defaults (the latter being written
+# to configuration files) and also of course allowing searches to be
+# run, but here with mutltiple searches per session.  this would be
+# the big time.
+
+# another big-time change would be to allow for the specification of a
+# different output file-naming scheme.  not even sure what that would
+# look like though.
+
+##
+#
+###########
+
+sub version {
+    print "autocs v$version_number (CsPTools v$cspt_version)\n";
+}
+
+if ($version) {
+    &version;
+    exit;
+}
+
+if ($help) {
+    my $format = "%3s %-12s %-8s %s\n";
+    my $indent = "\t\t\t    %-50s\n";
+    print "\n\n";
+    print "This is "; 
+    &version;
+    print "\n\tRun CorpusSearch with strict file-naming conventions, producing\n\ta separate output file for each input file.\n\n"; 
+    print "Usage:\n\tautocs [options] [query file] file(s)\n\n";
+    print "Command-line options:\n";
+    printf $format, "-a,", "--auto", "", "Use \"out\" as output directory."; 
+    printf $format, "-d,", "--dir", "<dir>", 
+    "Use <dir> as output directory (overrides -a).";
+    printf $format, "-h,", "--help", "", "Print this helpful message.";
+    printf $format, "-i,", "--id", "<string>", "Set query id to <string>";
+    printf $format, "-m,", "--manual", "", 
+    "Don't automatically determine query id.";
+    printf $format, "-o,", "--overwrite", "",
+    "Overwrite older output files without asking.";
+    printf $format, "-q,", "--query", "<file>", 
+    "Use <file> as query file.";
+    printf $format, "-s,", "--suffix", "<string>", 
+    "Use <string> as extension on output files.";
+    printf $format, "-t,", "--test", "",
+    "Don't actually run CorpusSearch, just report what";
+    printf $indent, "would have been run";
+    printf $format, "-v,", "--version", "", "Print version info.";
+    print "\n";
+    exit;
+}
+
+#####
+# request subroutine for getting user input 1st arg is string to ask
+# for, return value is input, so get it by assigning value of request
+# to a variable.
+sub request {
+    print "Please enter $_[0]\n";
+    chomp (my $response = <STDIN>);
+    $response;
+}
+#
+#####
+
+#####
+# get_query, called with no arguments, determines and returns the name
+# of the query file.
+sub get_query {
+    my $query;
+    if ($query = $opt_q) { # check for -q option first
+	if ($ARGV[0] =~ /.(q|c)$/) { # if user has specified it in both places
+	    if ($query eq $ARGV[0]) { # if it's the same file
+		shift @ARGV; # silently clean up
+	    }
+	    else {      # if not, quit with error
+		die "Two distinct query files specified!  Aborting...\n";
+	    }
+	}
+    }
+    elsif ($ARGV[0] =~ /.(q|c)$/) { # then check first cl-argument
+	$query = shift @ARGV;    # take it if it fits
+    }
+    else {                               # otherwise
+	$query = &request("query name"); # get it with request
+    }
+    $query = &file_test($query,"query"); # make sure file exists, is readable
+}                                        # also automatically returns it!
+#
+#####
+
+#####
+# takes as argument the name of the query file
+sub get_qid {
+    my $qid;
+    unless ($qid = $opt_i) { # first see if qid was provided with -i flag
+	unless ($opt_m) {  # skip automatic determination if manual flag set
+	    if ($_[0] =~ /(^\d+)/) { # then if query starts with a number
+		return ($qid = $1);   # set qid to that and return it
+	    }
+	}
+	$qid = &request("query identifier"); # if all else fails, prompt user
+    }
+    $qid;  # return value to calling context
+}
+#
+#####
+
+#####
+# first argument is name of query file
+sub get_outsuff {
+    my $outsuff;
+    unless ($outsuff = $opt_s) {  # check if outsuff provided with -s
+	unless ($opt_m) { # skip auto determ. if manual flag set
+	    if ($_[0] =~ /\.q$/) {   # then if query ends with .q
+		return ($outsuff = ".out");    # set outsuff to .out
+	    }
+	    elsif ($_[0] =~ /\.c$/) {   # and if query ends with .c
+		return ($outsuff = ".cod");    # set outsuff to .cod
+	    }                             # changed to .out 3.12
+	    else {                        # changed back to .cod 24.3.2005
+		die "Aborting!  Query file $_[0] malformed.\nMust end in either .q or .c\n";
+	    }
+	}
+	$outsuff = &request("the output suffix, including the dot"); 
+    }                      # if all else fails, prompt user
+    $outsuff; # return value to calling context
+} 
+#
+#####
+
+#####
+#
+sub get_outdir {
+    my $outdir;
+    unless ($outdir = $opt_d) { # check if supplied with -d flag
+	if ($opt_a) { # if automatic flag is set, then
+	    $outdir = "out"; # use default directory "out"  
+	}                    # should be replaced by config variable
+	else {   
+	    $outdir = &request("output directory"); # if all else fails
+	}                                           # prompt user
+    }
+    $outdir;
+}
+#
+#####
+
+
+#####
+# test subroutine: run when -t is set
+sub test_print {
+    print "Query file: $_[0]\n";
+    print "Corpus file: $_[1]\n";
+    print "Output file: $_[2]\n";
+    print "------------\n";
+}
+#
+#####
+
+#####
+# search subroutine: run when -t is not set.  the yes thing is what
+# sends the q to corpussearch.  not terribly portable, and doesn't
+# allow for any conditional execution.  as of 1.2.3 a bit more
+# portable: instead of hardcoding the way that i call cs, it uses an
+# environment variable that the user can set.
+
+sub run_search {
+    system ("$ENV{CS} $_[0] $_[1] -out $_[2]") and die "Couldn't run CS!\n";
+}
+#
+#####
+
+##### 
+# file_test subroutine takes two arguments, a potential filename
+# and a string describing the file type (e.g. query or input).  it
+# makes sure the file exists and is readable, prompting the user for
+# input if it is not.  if the potential filename is actually a
+# directory, it prints an appropriate response and aborts, because this
+# is presumably the result of the user leaving off a * in the filename.
+sub file_test {
+    my $filename = $_[0];    
+    if (-d $_[0]) { # first make sure it's not a directory name
+	die "The $_[1] file you named:\n\t$filename\nappears to be a directory.  Did you forget something?\nAborting...\n"; # warn and abort
+    }
+    until (-r $filename) {  # make sure it exists and is readable
+	print "The $_[1] file you name:\n\t$filename\ndoes not exist or is not readable.\n";
+	print "Please re-enter $_[1] file name, or type \"q\" to quit.\n";
+	chomp ($filename = <STDIN>);
+	if ($filename eq "q") {
+	    exit;                
+	}
+    }
+    $filename;
+}
+#
+#####
+
+#####
+# the parse_and_construct subroutine takes as its input the name of an
+# input file, the output directory, the qid and the output suffix and
+# constructs the full pathname for the output file.
+sub parse_and_construct {
+    my ($base,$dir,$ext); # declares and avoids warnings
+    ($base,$dir,$ext) = fileparse($ARGV[0], qr/\.[^.]*/); # parse components
+    "$_[1]\/$base\_$_[2]$_[3]"; # construct outputfilename
+}
+#
+#####
+
+##### 
+# the output_test subroutine makes sure there isn't already a file
+# with the name chosen for the output file.  if such a file exists, it
+# checks whether the -o flag is set, and then calls the
+# overwrite_options subroutine which figures out what to do
+sub output_test {
+    my $filename = $_[0]; # get value into local variable we can alter
+    if (-e $filename) { # if output file already exists
+	my $ans;
+	if ($opt_o) { # if overwrite flag is set
+	    $ans = "o"; # set overwrite variable
+	}
+	else { # if -o flag isn't set, notify user and give options
+	    print "File $filename already exists.\n" unless $_[1];  
+	       # first line doesn't print if we got back here from
+	       # output_options cause the answer last time was invalid
+	    print "Choose one of the following options:\n";
+	    print "\t[s]pecify different file name\n";
+	    print "\t[q]uit\n";
+	    print "\t[o]verwrite $filename\n";
+	    print "\toverwrite [a]ll\n";
+	    chomp ($ans = <STDIN>);	
+	}
+	$filename = &output_options($filename,$ans); # sends outfile name 
+    }                          # and answer to option handling subroutine
+    $filename;  # returns ultimate outfile name back to calling context
+}
+#
+#####
+
+#####
+# output_options subroutine figures out what to do when the originally
+# specified name for the outputfile would cause an overwrite, based on
+# either the command line -o flag or user input from the output_test
+# subroutine.  the reason why this part is split off is to simplify
+# things a bit when output_test has to be called again to make sure
+# that a newly specified name wouldn't lead to an accidental overwrite
+# either.  still a little ugly.
+sub output_options {
+    my $filename; # this variable will hold the filename to return
+    if ($_[1] eq "o") { # if answer was overwrite
+	unless ($opt_t) {
+	    unlink "$_[0]" or die "Couldn't delete $_[0]: $!\n";  
+	    # delete existing file so it 
+            # doesn't trip up corpussearch (but not if test flag is set)
+	}
+	$filename = $_[0]; # save supplied name for return            
+    }                            
+    elsif ($_[1] eq "a") { # if answer was overwrite all
+	unlink "$_[0]" or die "Couldn't delete $_[0]: $!\n";    
+                                               # delete existing file
+	$filename = $_[0]; # save supplied name for return
+	$opt_o = "1"; # set flag to overwrite subsequent files
+    }                 # without asking user
+    elsif ($_[1] eq "s") { # if answer was supply new filename
+	$filename = &request("output filename"); # get new filename
+	$filename = &output_test($filename); # make sure this one doesn't 
+    }                                        # already exist too
+    elsif ($_[1] eq "q") { # if answer was quit
+	print "Quitting...\n"; 
+	exit;                   # quit
+    }
+    else {                 # if answer was none of these
+	print "That wasn't one of the options.\n";
+	&output_test($_[0],"repeat"); # go get another answer
+    }          # "repeat" is just a dummy string, any second argument 
+               # suppresses printing first line "File XXX already exists"
+    $filename;  # returns ultimate outfile name back to calling context
+}
+#
+#####
+
+#####
+# main procedural part of program, enclosed in a bare block so that 
+# the variables can be locally scoped
+{
+# reading variables from a config file would go here.
+    my $query = &get_query;      # call subroutines to determine values
+    my $qid = &get_qid($query);  # for the various crucial variables
+    my $outsuff = &get_outsuff($query); # all now local to this main block
+    my $outdir = &get_outdir;
+
+    unless ($ARGV[0]) {
+	die "No input file specified!  Aborting...\n";
+    }
+# following while loop then works the magic
+    while ($ARGV[0]) {            # for each command line filename
+	my $infile = &file_test($ARGV[0],"input"); 
+                                  # make sure it's a readable file
+	my $outfile = &parse_and_construct($ARGV[0],$outdir,$qid,$outsuff); 
+        	                  # determine the name for its output file
+	$outfile = &output_test($outfile);   # make sure that name isn't in use
+	if ($opt_t) {                                 # if -t is set
+	    test_print($query,$ARGV[0],$outfile); # run test routine
+	}
+	else {                                     # otherwise
+	    run_search($query,$ARGV[0],$outfile);  # run query/ies
+	}
+	shift @ARGV;               # move on to next file
+    }
+}
+#
+#####
